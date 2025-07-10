@@ -1,59 +1,63 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-import librosa
 import numpy as np
-from keras.models import load_model
+import tensorflow as tf
+import librosa
+import os
 
 app = Flask(__name__)
 CORS(app)
 
+# Load the trained raw waveform model
+model = tf.keras.models.load_model('models/music_genre_raw_model.h5')
+
+# Genre labels
 genres = 'blues classical country disco hiphop jazz metal pop reggae rock'.split()
-model = load_model('model/music_genre_classifier_model.h5')
 
-# def predict_genre(file_path):
-#     y, sr = librosa.load(file_path, mono=True, duration=30)
-#     mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
-#     mfcc = np.expand_dims(mfcc, axis=-1)
-#     mfcc = np.expand_dims(mfcc, axis=0)
-#     prediction = model.predict(mfcc)[0]
-#     top5_indices = prediction.argsort()[-5:][::-1]
-#     top5_genres = [(genres[i], float(prediction[i])) for i in top5_indices]
-#     return top5_genres
-
-def predict_genre(file_path, max_pad_len=1300):
-    y, sr = librosa.load(file_path, mono=True, duration=30)
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
-
-    # Ensure consistent shape:
-    if mfcc.shape[1] < max_pad_len:
-        pad_width = max_pad_len - mfcc.shape[1]
-        mfcc = np.pad(mfcc, pad_width=((0,0),(0,pad_width)), mode='constant')
-    else:
-        mfcc = mfcc[:, :max_pad_len]
-
-    mfcc = np.expand_dims(mfcc, axis=-1)   # (40, 1300, 1)
-    mfcc = np.expand_dims(mfcc, axis=0)    # (1, 40, 1300, 1)
-    prediction = model.predict(mfcc)[0]
-    top5_indices = prediction.argsort()[-5:][::-1]
-    top5_genres = [(genres[i], float(prediction[i])) for i in top5_indices]
-    return top5_genres
-
+# Constants
+SAMPLE_RATE = 22050
+DURATION = 30
+SAMPLES_PER_TRACK = SAMPLE_RATE * DURATION
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
-@app.route('/predict', methods=['POST'])
+@app.route('/api/upload', methods=['POST'])
 def predict():
     if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'}), 400
+        return jsonify({'error': 'No file provided'})
 
     file = request.files['file']
-    file_path = 'temp/temp_audio.wav'
-    file.save(file_path)
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'})
 
-    top5 = predict_genre(file_path)
-    return jsonify({'predictions': top5})
+    try:
+        # Load audio
+        y, sr = librosa.load(file, sr=SAMPLE_RATE, mono=True)
+
+        # Pad or truncate
+        if len(y) < SAMPLES_PER_TRACK:
+            y = np.pad(y, (0, SAMPLES_PER_TRACK - len(y)), mode='constant')
+        else:
+            y = y[:SAMPLES_PER_TRACK]
+
+        # Reshape for prediction
+        y = np.expand_dims(y, axis=-1)  # (661500, 1)
+        y = np.expand_dims(y, axis=0)   # (1, 661500, 1)
+
+        # Predict
+        prediction = model.predict(y)[0]  # Shape: (10,)
+
+        # Get top 5 predictions
+        top5_indices = prediction.argsort()[-5:][::-1]
+        top5 = [(genres[i], float(prediction[i])) for i in top5_indices]
+
+        return jsonify({'predictions': top5})
+
+    except Exception as e:
+        print(f"Prediction error: {e}")
+        return jsonify({'error': 'Error during prediction'})
 
 if __name__ == '__main__':
     app.run(debug=True)

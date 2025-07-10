@@ -1,4 +1,5 @@
 /venv
 /data
+/models
 /model
 /temp/temp_audio.wav
